@@ -55,10 +55,15 @@ class FusionHelper {
         // add env variables
         for( String env : containerConfig.getEnvWhitelist())
             containerBuilder.addEnv(env)
+
+        // patch the cmd to be execution
+        final patchCmd = new ArrayList(runCmd)
+        patchCmd[-1] = "'${patchCmd[-1]}'"
+
         // assemble the final command
         final containerCmd = containerBuilder
                 .build()
-                .getRunCommand(runCmd.join(' '))
+                .getRunCommand(patchCmd.join(' '))
                 .replaceAll('-w "\\$PWD" ','') // <-- hack to remove the PWD work dir
 
         return ['sh', '-c', containerCmd]

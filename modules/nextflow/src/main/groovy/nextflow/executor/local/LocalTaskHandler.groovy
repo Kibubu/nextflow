@@ -17,6 +17,7 @@
 
 package nextflow.executor.local
 
+import java.nio.file.Files
 import java.nio.file.Path
 
 import groovy.transform.Canonical
@@ -45,15 +46,14 @@ class LocalTaskHandler extends TaskHandler implements FusionAwareTask {
     @Canonical
     static class TaskResult {
         Integer exitStatus
-        String logs
+        File logs
         Throwable error
-        TaskResult(int exitStatus, String logs) {
+        TaskResult(int exitStatus, File logs) {
             this.logs = logs
             this.exitStatus = exitStatus
         }
         TaskResult(Throwable error) {
             this.error = error
-            this.logs = this.error.message
         }
     }
 
@@ -66,8 +66,6 @@ class LocalTaskHandler extends TaskHandler implements FusionAwareTask {
     private final Path outputFile
 
     private final Path errorFile
-
-    private final Path logFile
 
     private Process process
 
@@ -86,7 +84,6 @@ class LocalTaskHandler extends TaskHandler implements FusionAwareTask {
         this.outputFile = task.workDir.resolve(TaskRun.CMD_OUTFILE)
         this.errorFile = task.workDir.resolve(TaskRun.CMD_ERRFILE)
         this.wrapperFile = task.workDir.resolve(TaskRun.CMD_RUN)
-        this.logFile = task.workDir.resolve(TaskRun.CMD_LOG)
         this.wallTimeMillis = task.config.getTime()?.toMillis()
         this.executor = executor
         this.session = executor.session
@@ -105,7 +102,7 @@ class LocalTaskHandler extends TaskHandler implements FusionAwareTask {
                 // start the execution and notify the event to the monitor
                 process = builder.start()
                 final status = process.waitFor()
-                result = new TaskResult(status, process.inputStream.text)
+                result = new TaskResult(status, builder.redirectOutput().file())
             }
             catch( Throwable ex ) {
                 result = new TaskResult(ex)
@@ -151,8 +148,11 @@ class LocalTaskHandler extends TaskHandler implements FusionAwareTask {
         final cmd = FusionHelper.runWithContainer(launcher, config, task.getContainer(), submit)
         log.debug "Launch cmd line: ${cmd.join(' ')}"
 
+        final logPath = Files.createTempFile('nf-task','.log')
+
         return new ProcessBuilder()
                 .redirectErrorStream(true)
+                .redirectOutput(logPath.toFile())
                 .command(cmd)
     }
 
@@ -192,9 +192,11 @@ class LocalTaskHandler extends TaskHandler implements FusionAwareTask {
             task.exitStatus = result.exitStatus!=null ? result.exitStatus : Integer.MAX_VALUE
             task.error = result.error
             task.stdout = outputFile
-            task.stderr = result.exitStatus && result.logs ? result.logs : errorFile
+            task.stderr = result.exitStatus && result.logs.size() ? result.logs.tail(50) : errorFile
             status = TaskStatus.COMPLETED
             destroy()
+            // fusion uses a temporary file, clean it up
+            if( fusionEnabled() ) result.logs.delete()
             return true
         }
 
