@@ -22,10 +22,14 @@ import java.nio.file.Path
 import java.util.concurrent.Callable
 import java.util.concurrent.Future
 
+import groovy.transform.Canonical
 import groovy.transform.CompileStatic
 import groovy.util.logging.Slf4j
 import nextflow.Session
+import nextflow.container.ContainerBuilder
 import nextflow.exception.ProcessException
+import nextflow.executor.fusion.FusionAwareTask
+import nextflow.executor.fusion.FusionUtils
 import nextflow.processor.LocalPollingMonitor
 import nextflow.processor.TaskHandler
 import nextflow.processor.TaskMonitor
@@ -43,6 +47,8 @@ import nextflow.util.ProcessHelper
 @CompileStatic
 @SupportedScriptTypes( [ScriptType.SCRIPTLET, ScriptType.GROOVY] )
 class LocalExecutor extends Executor {
+
+    private Map<String,String> sysEnv = System.getenv()
 
     @Override
     protected TaskMonitor createTaskMonitor() {
@@ -66,9 +72,20 @@ class LocalExecutor extends Executor {
     @Override
     protected void register() {
         super.register()
-        if( workDir.fileSystem != FileSystems.default ) {
-            log.warn "Local executor only supports default file system -- Check work directory: ${getWorkDir().toUriString()}"
+
+        if( workDir.fileSystem != FileSystems.default && !isFusionEnabled() ) {
+            log.warn "Local executor only supports non-default file system if Fusion is enabled -- Check work directory: ${getWorkDir().toUriString()}"
         }
+    }
+
+    @Override
+    boolean isContainerNative() {
+        return isFusionEnabled()
+    }
+
+    @Override
+    boolean isFusionEnabled() {
+        return FusionUtils.isFusionEnabled(session, sysEnv)
     }
 }
 
@@ -80,7 +97,22 @@ class LocalExecutor extends Executor {
  * @author Paolo Di Tommaso <paolo.ditommaso@gmail.com>
  */
 @Slf4j
-class LocalTaskHandler extends TaskHandler {
+class LocalTaskHandler extends TaskHandler implements FusionAwareTask {
+
+    @Canonical
+    static class TaskResult {
+        Integer exitStatus
+        String logs
+        Throwable error
+        TaskResult(int exitStatus, String logs) {
+            this.logs = logs
+            this.exitStatus = exitStatus
+        }
+        TaskResult(Throwable error) {
+            this.error = error
+            this.logs = this.error.message
+        }
+    }
 
     private final Path exitFile
 
@@ -92,6 +124,8 @@ class LocalTaskHandler extends TaskHandler {
 
     private final Path errorFile
 
+    private final Path logFile
+
     private Process process
 
     private boolean destroyed
@@ -100,7 +134,7 @@ class LocalTaskHandler extends TaskHandler {
 
     private Session session
 
-    private volatile result
+    private volatile TaskResult result
 
 
     LocalTaskHandler( TaskRun task, LocalExecutor executor  ) {
@@ -110,6 +144,7 @@ class LocalTaskHandler extends TaskHandler {
         this.outputFile = task.workDir.resolve(TaskRun.CMD_OUTFILE)
         this.errorFile = task.workDir.resolve(TaskRun.CMD_ERRFILE)
         this.wrapperFile = task.workDir.resolve(TaskRun.CMD_RUN)
+        this.logFile = task.workDir.resolve(TaskRun.CMD_LOG)
         this.wallTimeMillis = task.config.getTime()?.toMillis()
         this.executor = executor
         this.session = executor.session
@@ -118,33 +153,20 @@ class LocalTaskHandler extends TaskHandler {
     @Override
     void submit() {
         // create the wrapper script
-        new BashWrapperBuilder(task) .build()
+        buildTaskWrapper()
 
         // the cmd list to launch it
-        def cmd = new ArrayList(BashWrapperBuilder.BASH) << wrapperFile.getName()
-        log.debug "Launch command line: ${cmd.join(' ')}"
+        final builder = createLaunchProcessBuilder()
 
         session.getExecService().submit( {
-
             try {
-                // NOTE: make sure to redirect process output to a file otherwise
-                // execution can hang when stdout/stderr is bigger than 64k
-                final workDir = task.workDir.toFile()
-                final logFile = new File(workDir, TaskRun.CMD_LOG)
-
-                ProcessBuilder builder = new ProcessBuilder()
-                        .redirectErrorStream(true)
-                        .redirectOutput(logFile)
-                        .directory(workDir)
-                        .command(cmd)
-
-                // -- start the execution and notify the event to the monitor
+                // start the execution and notify the event to the monitor
                 process = builder.start()
-                result = process.waitFor()
+                final status = process.waitFor()
+                result = new TaskResult(status, process.inputStream.text)
             }
             catch( Throwable ex ) {
-                log.trace("Failed to execute command: ${cmd.join(' ')}", ex)
-                result = ex
+                result = new TaskResult(ex)
             }
             finally {
                 executor.getTaskMonitor().signal()
@@ -156,6 +178,66 @@ class LocalTaskHandler extends TaskHandler {
         status = TaskStatus.SUBMITTED
     }
 
+    protected void buildTaskWrapper() {
+        final wrapper = fusionEnabled()
+                ? fusionLauncher()
+                : new BashWrapperBuilder(task.toTaskBean())
+        //
+        wrapper.build()
+    }
+
+    protected ProcessBuilder localProcessBuilder() {
+        final cmd = new ArrayList<String>(BashWrapperBuilder.BASH) << wrapperFile.getName()
+        log.debug "Launch cmd line: ${cmd.join(' ')}"
+        
+        // NOTE: make sure to redirect process output to a file otherwise
+        // execution can hang when stdout/stderr is bigger than 64k
+        final workDir = task.workDir.toFile()
+        final logFile = new File(workDir, TaskRun.CMD_LOG)
+
+        return new ProcessBuilder()
+                .redirectErrorStream(true)
+                .redirectOutput(logFile)
+                .directory(workDir)
+                .command(cmd)
+    }
+
+    protected ProcessBuilder fusionProcessBuilder() {
+        final submit = fusionSubmitCli()
+        final cmd = runWithContainer(task.getContainer(), submit)
+        log.debug "Launch cmd line: ${cmd.join(' ')}"
+
+        return new ProcessBuilder()
+                .redirectErrorStream(true)
+                .command(cmd)
+    }
+
+    protected ProcessBuilder createLaunchProcessBuilder() {
+        return fusionEnabled()
+                ? fusionProcessBuilder()
+                : localProcessBuilder()
+    }
+
+    protected List<String> runWithContainer(String container, List<String> runCmd) {
+        final containerConfig = session.getContainerConfig()
+        final engine = containerConfig.getEngine()
+        final containerBuilder = ContainerBuilder.create(engine, container)
+                .params(containerConfig)
+                .params(privileged: true)
+        //
+        final buckets = fusionLauncher().fusionBuckets().join(',')
+        containerBuilder.addEnv("NXF_FUSION_BUCKETS=$buckets")
+        
+        // add env variables
+        for( String env : containerConfig.getEnvWhitelist())
+            containerBuilder.addEnv(env)
+        // assemble the final command
+        final containerCmd = containerBuilder
+                .build()
+                .getRunCommand(runCmd.join(' '))
+
+        return ['sh', '-c', containerCmd]
+    }
 
     long elapsedTimeMillis() {
         startTimeMillis ? System.currentTimeMillis() - startTimeMillis : 0
@@ -184,10 +266,10 @@ class LocalTaskHandler extends TaskHandler {
         if( !isRunning() ) { return false }
 
         if( result != null ) {
-            task.exitStatus = result instanceof Integer ? result : Integer.MAX_VALUE
-            task.error = result instanceof Throwable ? result : null
+            task.exitStatus = result.exitStatus!=null ? result.exitStatus : Integer.MAX_VALUE
+            task.error = result.error
             task.stdout = outputFile
-            task.stderr = errorFile
+            task.stderr = result.exitStatus && result.logs ? result.logs : errorFile
             status = TaskStatus.COMPLETED
             destroy()
             return true

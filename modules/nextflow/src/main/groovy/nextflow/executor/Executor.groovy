@@ -168,6 +168,10 @@ abstract class Executor {
         return false
     }
 
+    boolean isFusionEnabled() {
+        return false
+    }
+
     /**
      * Allow graceful termination of executor resources
      */
