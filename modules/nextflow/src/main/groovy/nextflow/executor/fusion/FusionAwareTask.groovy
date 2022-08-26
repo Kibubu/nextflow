@@ -21,6 +21,10 @@ import groovy.transform.CompileStatic
 import nextflow.executor.Executor
 import nextflow.processor.TaskRun
 /**
+ * Implements commons logic to handle fusion based tasks.
+ * This trait is expected to be used by a sub-class of {@link nextflow.processor.TaskHandler}
+ *
+ * See {@link nextflow.executor.local.LocalTaskHandler}
  *
  * @author Paolo Di Tommaso <paolo.ditommaso@gmail.com>
  */

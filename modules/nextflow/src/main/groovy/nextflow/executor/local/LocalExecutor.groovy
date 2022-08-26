@@ -23,7 +23,7 @@ import groovy.transform.CompileStatic
 import groovy.util.logging.Slf4j
 import nextflow.executor.Executor
 import nextflow.executor.SupportedScriptTypes
-import nextflow.executor.fusion.FusionUtils
+import nextflow.executor.fusion.FusionHelper
 import nextflow.processor.LocalPollingMonitor
 import nextflow.processor.TaskHandler
 import nextflow.processor.TaskMonitor
@@ -74,7 +74,7 @@ class LocalExecutor extends Executor {
 
     @Override
     boolean isFusionEnabled() {
-        return FusionUtils.isFusionEnabled(session, sysEnv)
+        return FusionHelper.isFusionEnabled(session, sysEnv)
     }
 }
 

@@ -23,16 +23,15 @@ import groovy.transform.Canonical
 import groovy.transform.CompileStatic
 import groovy.util.logging.Slf4j
 import nextflow.Session
-import nextflow.container.ContainerBuilder
 import nextflow.exception.ProcessException
 import nextflow.executor.BashWrapperBuilder
 import nextflow.executor.fusion.FusionAwareTask
+import nextflow.executor.fusion.FusionHelper
 import nextflow.processor.TaskHandler
 import nextflow.processor.TaskRun
 import nextflow.processor.TaskStatus
 import nextflow.trace.TraceRecord
 import nextflow.util.ProcessHelper
-
 /**
  * A process wrapper adding the ability to access to the Posix PID
  * and the {@code hasExited} flag
@@ -147,7 +146,9 @@ class LocalTaskHandler extends TaskHandler implements FusionAwareTask {
 
     protected ProcessBuilder fusionProcessBuilder() {
         final submit = fusionSubmitCli()
-        final cmd = runWithContainer(task.getContainer(), submit)
+        final launcher = fusionLauncher()
+        final config = session.containerConfig
+        final cmd = FusionHelper.runWithContainer(launcher, config, task.getContainer(), submit)
         log.debug "Launch cmd line: ${cmd.join(' ')}"
 
         return new ProcessBuilder()
@@ -159,30 +160,6 @@ class LocalTaskHandler extends TaskHandler implements FusionAwareTask {
         return fusionEnabled()
                 ? fusionProcessBuilder()
                 : localProcessBuilder()
-    }
-
-    protected List<String> runWithContainer(String container, List<String> runCmd) {
-        if( !container )
-            throw new IllegalArgumentException("Missing task container -- Fusion requires task to be executor in a container process")
-        final containerConfig = session.getContainerConfig()
-        final engine = containerConfig.getEngine()
-        final containerBuilder = ContainerBuilder.create(engine, container)
-                .addMountWorkDir(false)
-                .params(containerConfig)
-                .params(privileged: true)
-        //
-        final buckets = fusionLauncher().fusionBuckets().join(',')
-        containerBuilder.addEnv("NXF_FUSION_BUCKETS=$buckets")
-
-        // add env variables
-        for( String env : containerConfig.getEnvWhitelist())
-            containerBuilder.addEnv(env)
-        // assemble the final command
-        final containerCmd = containerBuilder
-                .build()
-                .getRunCommand(runCmd.join(' '))
-
-        return ['sh', '-c', containerCmd]
     }
 
     long elapsedTimeMillis() {

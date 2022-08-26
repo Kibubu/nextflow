@@ -111,6 +111,9 @@ class PodmanBuilder extends ContainerBuilder<PodmanBuilder> {
         if( runOptions )
             result << runOptions.join(' ') << ' '
 
+        if( privileged )
+            result << '--privileged '
+
         if( cpus ) {
             result << "--cpus ${String.format(Locale.ROOT, "%.1f", cpus)} "
         }
