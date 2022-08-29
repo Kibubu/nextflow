@@ -29,6 +29,8 @@ import nextflow.container.DockerBuilder
 import nextflow.exception.NodeTerminationException
 import nextflow.exception.ProcessSubmitException
 import nextflow.executor.BashWrapperBuilder
+import nextflow.executor.fusion.FusionAwareTask
+import nextflow.executor.fusion.FusionHelper
 import nextflow.k8s.client.K8sClient
 import nextflow.k8s.client.K8sResponseException
 import nextflow.k8s.model.PodEnv
@@ -48,7 +50,7 @@ import nextflow.util.PathTrie
  */
 @Slf4j
 @CompileStatic
-class K8sTaskHandler extends TaskHandler {
+class K8sTaskHandler extends TaskHandler implements FusionAwareTask {
 
     @Lazy
     static private final String OWNER = {
@@ -69,7 +71,7 @@ class K8sTaskHandler extends TaskHandler {
 
     private String podName
 
-    private K8sWrapperBuilder builder
+    private BashWrapperBuilder builder
 
     private Path outputFile
 
@@ -136,8 +138,24 @@ class K8sTaskHandler extends TaskHandler {
         trie.longest()
     }
 
-    protected K8sWrapperBuilder createBashWrapper(TaskRun task) {
-        new K8sWrapperBuilder(task)
+    protected BashWrapperBuilder createBashWrapper(TaskRun task) {
+        final bean = task.toTaskBean()
+        bean.headerScript = "NXF_CHDIR=${Escape.path(bean.workDir)}"
+
+        return fusionEnabled()
+                ? fusionLauncher()
+                : new BashWrapperBuilder(bean)
+    }
+
+    protected List<String> classicSubmitCli() {
+        new ArrayList(BashWrapperBuilder.BASH) << "${Escape.path(task.workDir)}/${TaskRun.CMD_RUN}".toString()
+    }
+
+    protected List<String> getSubmitCommand() {
+        // final launcher command
+        return fusionEnabled()
+                ? fusionSubmitCli()
+                : classicSubmitCli()
     }
 
     protected String getSyntheticPodName(TaskRun task) {
@@ -172,8 +190,7 @@ class K8sTaskHandler extends TaskHandler {
 
     protected Map newSubmitRequest0(TaskRun task, String imageName) {
 
-        final fixOwnership = builder.fixOwnership()
-        final launcher = new ArrayList(new ArrayList(BashWrapperBuilder.BASH)) << "${Escape.path(task.workDir)}/${TaskRun.CMD_RUN}".toString()
+        final launcher = getSubmitCommand()
         final taskCfg = task.getConfig()
 
         final clientConfig = client.config
@@ -197,7 +214,7 @@ class K8sTaskHandler extends TaskHandler {
 
         // note: task environment is managed by the task bash wrapper
         // do not add here -- see also #680
-        if( fixOwnership )
+        if( task.containerConfig.fixOwnership )
             builder.withEnv(PodEnv.value('NXF_OWNER', getOwner()))
 
         // add computing resources
@@ -219,6 +236,13 @@ class K8sTaskHandler extends TaskHandler {
         if ( taskCfg.time ) {
             final duration = taskCfg.getTime()
             builder.withActiveDeadline(duration.toSeconds() as int)
+        }
+
+        if ( fusionEnabled() ) {
+            builder.withPrivileged(true)
+
+            final buckets = fusionLauncher().fusionBuckets().join(',')
+            builder.withEnv(PodEnv.value('NXF_FUSION_BUCKETS', buckets))
         }
 
         return useJobResource()
