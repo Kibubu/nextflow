@@ -1674,19 +1674,26 @@ in the configuration file to select and configure subset of processes having sim
 
 See the :ref:`config-process-selectors` documentation for details.
 
-The ``label`` directive can be also expressed as a `Map<key-value>` or a `key=value` sentence:
+.. _process-resourceLabel:
+
+resourceLabel
+-----
+
+The ``resourceLabel`` directive allows the annotation of processes with mnemonic identifier of your choice that
+will be used to tag the process when pipeline is running in AWS, Google or K8s
+
+This directive is expressed as a `Map<key-value>` sentence:
 
   process bigTask {
-    label "region=eu-west-1"
-    label organization: 'MyOrganization'
-    label department: 'a department', group: 'a group'
+    resourceLabel organization: 'MyOrganization'
+    resourceLabel department: 'a department', group: 'a group'
 
     '''
     <task script>
     '''
   }
 
-These labels will be used to tag the process when pipeline is running in AWS, Google or K8s
+ResourceLabels are useful, for example, to obtain information about jobs executed in a cloud environment
 
 .. _process-machineType:
 

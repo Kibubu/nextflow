@@ -958,5 +958,39 @@ class K8sTaskHandlerTest extends Specification {
         handler.completeTimeMillis == 20
     }
 
+    def 'should return resources labels into the map' () {
+        given:
+        def uuid = UUID.randomUUID()
+        def task = Mock(TaskRun)
+        def exec = Mock(K8sExecutor)
+        def proc = Mock(TaskProcessor)
+        def sess = Mock(Session)
+        def handler = Spy(new K8sTaskHandler(executor: exec))
+
+        when:
+        def labels = handler.getLabels(task)
+
+        then:
+        handler.getRunName() >> 'pedantic-joe'
+        task.getName() >> 'hello-world-1'
+        task.getProcessor() >> proc
+        proc.getName() >> 'hello-proc'
+        exec.getSession() >> sess
+        sess.getUniqueId() >> uuid
+        exec.getK8sConfig() >> [pod: [
+                [label: 'foo', value: 'bar'],
+        ]]
+        task.getConfig() >> new TaskConfig(resourceLabels:[a:'b'])
+
+        labels == [
+                foo: 'bar',
+                app:'nextflow',
+                runName:'pedantic-joe',
+                taskName:'hello-world-1',
+                processName:'hello-proc',
+                sessionId:"uuid-$uuid".toString(),
+                a:'b'
+        ]
+    }
 
 }

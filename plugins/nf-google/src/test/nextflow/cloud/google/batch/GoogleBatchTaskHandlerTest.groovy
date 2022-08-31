@@ -157,4 +157,56 @@ class GoogleBatchTaskHandlerTest extends Specification {
         and:
         req.getLogsPolicy().getDestination().toString() == 'CLOUD_LOGGING'
     }
+
+    def 'should create submit request with resource labels spec' () {
+        given:
+        def WORK_DIR = CloudStorageFileSystem.forBucket('foo').getPath('/scratch')
+        def CONTAINER_IMAGE = 'debian:latest'
+        def exec = Mock(GoogleBatchExecutor) {
+            getConfig() >> Mock(BatchConfig)
+        }
+        and:
+        def bean = new TaskBean(workDir: WORK_DIR, inputFiles: [:])
+        def task = Mock(TaskRun) {
+            toTaskBean() >> bean
+            getHashLog() >> 'abcd1234'
+            getWorkDir() >> WORK_DIR
+            getContainer() >> CONTAINER_IMAGE
+            getConfig() >> Mock(TaskConfig) {
+                getCpus() >> 2
+                getResourceLabels() >> [ foo: 'bar']
+            }
+        }
+
+        and:
+        def handler = new GoogleBatchTaskHandler(task, exec)
+
+        when:
+        def req = handler.newSubmitRequest(task)
+        then:
+        def taskGroup = req.getTaskGroups(0)
+        def runnable = taskGroup.getTaskSpec().getRunnables(0)
+        def instancePolicy = req.getAllocationPolicy().getInstances(0).getPolicy()
+        and:
+        taskGroup.getTaskSpec().getComputeResource().getBootDiskMib() == 0
+        taskGroup.getTaskSpec().getComputeResource().getCpuMilli() == 2_000
+        taskGroup.getTaskSpec().getComputeResource().getMemoryMib() == 0
+        taskGroup.getTaskSpec().getMaxRunDuration().getSeconds() == 0
+        and:
+        runnable.getContainer().getCommandsList().join(' ') == '/bin/bash -o pipefail -c trap "{ cp .command.log /mnt/foo/scratch/.command.log; }" ERR; /bin/bash /mnt/foo/scratch/.command.run 2>&1 | tee .command.log'
+        runnable.getContainer().getImageUri() == CONTAINER_IMAGE
+        runnable.getContainer().getOptions() == ''
+        runnable.getContainer().getVolumesList() == ['/mnt/foo/scratch:/mnt/foo/scratch:rw']
+        and:
+        instancePolicy.getAcceleratorsCount() == 0
+        instancePolicy.getMachineType() == ''
+        instancePolicy.getMinCpuPlatform() == ''
+        instancePolicy.getProvisioningModel().toString() == 'PROVISIONING_MODEL_UNSPECIFIED'
+        and:
+        req.getAllocationPolicy().getNetwork().getNetworkInterfacesCount() == 0
+        and:
+        req.getAllocationPolicy().getLabelsMap() == [foo:'bar']
+        and:
+        req.getLogsPolicy().getDestination().toString() == 'CLOUD_LOGGING'
+    }
 }
